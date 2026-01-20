@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# ============================================================
+# UKB SAIGE Step 0 prep: Create an LD-pruned PLINK dataset
+# From merged hard-called genotypes (PLINK bed/bim/fam)
+#
+# Output: pruned PLINK bed/bim/fam + prune.in list
+# Use this pruned dataset as input to saige_gwas_sparse_grm.
+# ============================================================
+
+set -euo pipefail
+
+# -----------------------------
+# User settings (edit as needed)
+# -----------------------------
+MERGED_DIR="/Data/regenie_input/merged/work"
+MERGED_PREFIX="ukb22418_c1_22_b0_v2_merged"
+
+# Optional: restrict to an ancestry subset to reduce N and improve stability.
+# Format expected by PLINK: either 1 column (IID) or 2 columns (FID IID).
+# Leave empty "" to use all samples in the merged .fam.
+KEEP_DX=""   # e.g. "/Data/phenotypes/ukb_whitebrit_keep.famlike.txt"
+
+# LD pruning parameters (SAIGE-typical defaults)
+PRUNE_WIN=50     # kb window
+PRUNE_STEP=5     # step size
+PRUNE_R2=0.05    # LD threshold
+
+# MAF threshold for GRM marker selection (recommended 0.01; you may try 0.005)
+MAF=0.01
+
+# Output directory (DNAnexus project path)
+OUTDIR="/Data/SAIGE_inputs/step0_pruned"
+OUTPREFIX="ukb22418_GRM_LDpruned_maf${MAF}_r2${PRUNE_R2}"
+
+# DNAnexus compute settings
+INST="mem1_ssd1_v2_x16"
+
+# -----------------------------
+# Sanity checks
+# -----------------------------
+dx mkdir -p "$OUTDIR" >/dev/null 2>&1 || true
+
+echo "== Inputs =="
+echo "MERGED: ${MERGED_DIR}/${MERGED_PREFIX}.{bed,bim,fam}"
+echo "KEEP_DX: ${KEEP_DX:-<none>}"
+echo "MAF: $MAF"
+echo "LD prune: indep-pairwise ${PRUNE_WIN} ${PRUNE_STEP} ${PRUNE_R2}"
+echo "OUTDIR: $OUTDIR"
+echo "OUTPREFIX: $OUTPREFIX"
+echo
+
+# -----------------------------
+# Main command to run in SWR
+# -----------------------------
+# NOTE: We avoid `dx cat` in the job unless the keep file is passed with -iin.
+run_prune_cmd=$(cat <<EOF
+set -euo pipefail
+
+echo "== Staged files =="
+ls -lh
+
+BFILE="${MERGED_PREFIX}"
+PHENO_KEEP_OPT=""
+
+# If a keep file was provided via -iin, it will be present locally with its basename.
+if [ -n "${KEEP_DX}" ]; then
+  keep_base=\$(basename "${KEEP_DX}")
+  echo "== Using keep file: \$keep_base =="
+  cp "\$keep_base" keep.txt
+
+  # Detect 1-col (IID) vs 2-col (FID IID); convert 1-col to 2-col for safety
+  ncol=\$(awk 'NR==1{print NF; exit}' keep.txt)
+  if [ "\$ncol" -eq 1 ]; then
+    awk '{print \$1, \$1}' keep.txt > keep.fid_iid
+    mv keep.fid_iid keep.txt
+  fi
+
+  echo "Keep rows: \$(wc -l < keep.txt)"
+  PHENO_KEEP_OPT="--keep keep.txt"
+else
+  echo "== No keep file provided; using ALL samples =="
+fi
+
+echo
+echo "== Step 1: LD pruning (writes prune.in / prune.out) =="
+plink2 --bfile "\$BFILE" \
+  --autosome \
+  --maf ${MAF} \
+  \$PHENO_KEEP_OPT \
+  --indep-pairwise ${PRUNE_WIN} ${PRUNE_STEP} ${PRUNE_R2} \
+  --out prune
+
+echo "Markers retained after pruning:"
+wc -l prune.prune.in
+
+echo
+echo "== Step 2: Create pruned PLINK dataset =="
+plink2 --bfile "\$BFILE" \
+  --autosome \
+  --maf ${MAF} \
+  \$PHENO_KEEP_OPT \
+  --extract prune.prune.in \
+  --make-bed \
+  --out "${OUTPREFIX}"
+
+echo
+echo "== Outputs =="
+ls -lh "${OUTPREFIX}".bed "${OUTPREFIX}".bim "${OUTPREFIX}".fam prune.prune.in
+
+echo
+echo "== Counts =="
+echo -n "Samples in pruned .fam: "
+wc -l < "${OUTPREFIX}.fam"
+echo -n "Variants in pruned .bim: "
+wc -l < "${OUTPREFIX}.bim"
+EOF
+)
+
+# Build dx run command with required inputs
+dx_cmd=(
+  dx run swiss-army-knife
+  -iin="${MERGED_DIR}/${MERGED_PREFIX}.bed"
+  -iin="${MERGED_DIR}/${MERGED_PREFIX}.bim"
+  -iin="${MERGED_DIR}/${MERGED_PREFIX}.fam"
+  -icmd="${run_prune_cmd}"
+  --instance-type "${INST}"
+  --destination "${OUTDIR}/"
+  --tag "saige_step0_prune"
+  --brief --yes
+)
+
+# If KEEP_DX is set, include it as an input so it is staged locally
+if [ -n "${KEEP_DX}" ]; then
+  dx_cmd+=( -iin="${KEEP_DX}" )
+fi
+
+echo "== Launching pruning job =="
+printf '%q ' "${dx_cmd[@]}"
+echo
+"${dx_cmd[@]}"
