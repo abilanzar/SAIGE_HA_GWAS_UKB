@@ -10,12 +10,11 @@
 set -euo pipefail
 
 # -----------------------------
-# User settings (edit as needed)
+# User settings
 # -----------------------------
 MERGED_DIR="/Data/regenie_input/merged/work"
 MERGED_PREFIX="ukb22418_c1_22_b0_v2_merged"
 
-# Optional: restrict to an ancestry subset to reduce N and improve stability.
 # Format expected by PLINK: either 1 column (IID) or 2 columns (FID IID).
 # Leave empty "" to use all samples in the merged .fam.
 KEEP_DX=""   # e.g. "/Data/phenotypes/ukb_whitebrit_keep.famlike.txt"
@@ -25,7 +24,7 @@ PRUNE_WIN=50     # kb window
 PRUNE_STEP=5     # step size
 PRUNE_R2=0.05    # LD threshold
 
-# MAF threshold for GRM marker selection (recommended 0.01; you may try 0.005)
+# MAF threshold for GRM marker selection
 MAF=0.01
 
 # Output directory (DNAnexus project path)
@@ -35,9 +34,6 @@ OUTPREFIX="ukb22418_GRM_LDpruned_maf${MAF}_r2${PRUNE_R2}"
 # DNAnexus compute settings
 INST="mem1_ssd1_v2_x16"
 
-# -----------------------------
-# Sanity checks
-# -----------------------------
 dx mkdir -p "$OUTDIR" >/dev/null 2>&1 || true
 
 echo "== Inputs =="
@@ -52,7 +48,7 @@ echo
 # -----------------------------
 # Main command to run in SWR
 # -----------------------------
-# NOTE: We avoid `dx cat` in the job unless the keep file is passed with -iin.
+# NOTE: avoid `dx cat` in the job unless the keep file is passed with -iin.
 run_prune_cmd=$(cat <<EOF
 set -euo pipefail
 
